@@ -3,13 +3,11 @@
 
 #include "maze.h"
 
-// Preračunava matricu udaljenosti na temelju trenutno otkrivenih zidova
-void flood_update(void);
+// Prima 'true' ako se vraća na start (0,0), ili 'false' ako ide prema centru
+void flood_update(bool to_start);
 
-// Vraća izračunatu udaljenost za određeno polje (za ispis na ekranu)
 int flood_get_distance(int x, int y);
 
-// Određuje najbolji idući smjer (smjer s najmanjim brojem/udaljenosti)
 Direction flood_get_best_direction(int x, int y, Direction current_dir);
 
 #endif

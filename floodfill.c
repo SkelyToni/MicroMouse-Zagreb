@@ -5,7 +5,7 @@
 
 static int dist[MAZE_SIZE][MAZE_SIZE];
 
-void flood_update(void) {
+void flood_update(bool to_start) {
     // Postavi sve udaljenosti na maksimalnu vrijednost
     for (int x = 0; x < MAZE_SIZE; x++) {
         for (int y = 0; y < MAZE_SIZE; y++) {
@@ -16,18 +16,26 @@ void flood_update(void) {
     int queueX[256], queueY[256];
     int head = 0, tail = 0;
 
-    // Središnja 4 ciljna polja u standardnom 16x16 labirintu imaju udaljenost 0
-    int centers[4][2] = {{7, 7}, {7, 8}, {8, 7}, {8, 8}};
-    for (int i = 0; i < 4; i++) {
-        int cx = centers[i][0];
-        int cy = centers[i][1];
-        dist[cx][cy] = 0;
-        queueX[tail] = cx;
-        queueY[tail] = cy;
+    if (to_start) {
+        // Ako se vraćamo, početna točka (0,0) postaje naš cilj s udaljenošću 0
+        dist[0][0] = 0;
+        queueX[tail] = 0;
+        queueY[tail] = 0;
         tail++;
+    } else {
+        // Standardno: središnja 4 ciljna polja imaju udaljenost 0
+        int centers[4][2] = {{7, 7}, {7, 8}, {8, 7}, {8, 8}};
+        for (int i = 0; i < 4; i++) {
+            int cx = centers[i][0];
+            int cy = centers[i][1];
+            dist[cx][cy] = 0;
+            queueX[tail] = cx;
+            queueY[tail] = cy;
+            tail++;
+        }
     }
 
-    // Širenje valova udaljenosti kroz prohodne puteve (provjera preko maze_has_wall)
+    // Širenje valova udaljenosti (BFS)
     while (head < tail) {
         int cx = queueX[head];
         int cy = queueY[head];
@@ -53,9 +61,7 @@ void flood_update(void) {
         // Provjeri Zapad
         if (!maze_has_wall(cx, cy, WEST) && (cx - 1 >= 0) && dist[cx - 1][cy] == MAX_VALUE) {
             dist[cx - 1][cy] = current_dist + 1;
-            queueX[tail] = cx - 1; 
-            queueY[tail] = cy; 
-            tail++;
+            queueX[tail] = cx - 1; queueY[tail] = cy; tail++;
         }
     }
 }
@@ -68,7 +74,6 @@ Direction flood_get_best_direction(int x, int y, Direction current_dir) {
     Direction best_dir = current_dir;
     int min_dist = MAX_VALUE;
 
-    // Prođi kroz sve smjerove u krug i traži onaj koji nema zid i vodi na polje s najmanjim brojem
     for (int d = 0; d < 4; d++) {
         if (!maze_has_wall(x, y, d)) {
             int nx = x, ny = y;
