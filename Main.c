@@ -1,108 +1,144 @@
 #include <stdio.h>
 #include <stdbool.h>
+#include <string.h>
 #include "API.h"
 #include "maze.h"
 #include "floodfill.h"
 
-// Definiramo tri faze u životu našeg miša
 typedef enum {
     EXPLORING,      // Ide prema centru i skenira zidove (Plavo)
     RETURNING,      // Vraća se na start (0,0) i skenira usput (Žuto)
     FASTEST_RUN     // Juri najbržom stazom, senzori su isključeni (Zeleno)
 } MouseState;
 
+// Snapshot the current flood distances into a buffer so we can
+// compare them after the next explore/return cycle.
+static int prev_flood[MAZE_SIZE][MAZE_SIZE];
+
+static void snapshot_flood(void) {
+    for (int x = 0; x < MAZE_SIZE; x++)
+        for (int y = 0; y < MAZE_SIZE; y++)
+            prev_flood[x][y] = flood_get_distance(x, y);
+}
+
+// Returns true if the flood map is identical to the last snapshot.
+static bool flood_is_stable(void) {
+    for (int x = 0; x < MAZE_SIZE; x++)
+        for (int y = 0; y < MAZE_SIZE; y++)
+            if (flood_get_distance(x, y) != prev_flood[x][y])
+                return false;
+    return true;
+}
+
 int main(int argc, char* argv[]) {
     int x = 0, y = 0;
     Direction current_dir = NORTH;
-    
-    // Početno stanje je istraživanje
     MouseState state = EXPLORING;
+    int pass = 0; // How many explore→return cycles completed
 
     maze_init();
+    memset(prev_flood, 0xFF, sizeof(prev_flood)); // all 255 = "never computed"
     API_clearAllColor();
     API_clearAllText();
     API_setColor(0, 0, 'G');
     API_setText(0, 0, "Start");
 
     while (true) {
-        // Handle simulator reset button
         if (API_wasReset()) {
             API_ackReset();
             x = 0; y = 0; current_dir = NORTH;
             state = EXPLORING;
+            pass = 0;
             maze_init();
+            memset(prev_flood, 0xFF, sizeof(prev_flood));
             API_clearAllColor();
             API_clearAllText();
             API_setColor(0, 0, 'G');
             API_setText(0, 0, "Start");
         }
 
-        // 1. SKENIRANJE ZIDOVA (Samo ako NE vozimo brzu vožnju!)
-        // U FASTEST_RUN fazi miš potpuno ignorira senzore i vjeruje samo svojoj mapi
+        // Scan walls on every non-fast phase
         if (state != FASTEST_RUN) {
             maze_scan_and_map(x, y, current_dir);
         }
-        
-        // Bojanje staze na temelju trenutne faze
-        if (state == EXPLORING) {
-            API_setColor(x, y, 'B'); // Plavo prema centru
-        } else if (state == RETURNING) {
-            API_setColor(x, y, 'Y'); // Žuto natrag na start
-        } else if (state == FASTEST_RUN) {
-            API_setColor(x, y, 'G'); // Zeleno za idealnu stazu
-        }
 
-        // Ispis koordinata na ploču
+        // Colour by phase
+        if      (state == EXPLORING)   API_setColor(x, y, 'B');
+        else if (state == RETURNING)   API_setColor(x, y, 'Y');
+        else if (state == FASTEST_RUN) API_setColor(x, y, 'G');
+
+        // Display flood distance
         char text[6];
         snprintf(text, sizeof(text), "%d", flood_get_distance(x, y));
         API_setText(x, y, text);
 
-        // --- LOGIKA PROMJENE FAZA (STATE MACHINE) ---
-        
-        // Faza 1 -> Faza 2: Stigao u centar, okreći se natrag
+        // --- STATE MACHINE ---
+
+        // EXPLORING → RETURNING: reached centre
         if (state == EXPLORING && (x == 7 || x == 8) && (y == 7 || y == 8)) {
             state = RETURNING;
-            API_setText(x, y, "CILJ 1");
+            API_setText(x, y, "CILJ");
         }
 
-        // Faza 2 -> Faza 3: Vratio se na start, spremi se za brzi run!
+        // RETURNING → decide: more passes or fast run
         if (state == RETURNING && x == 0 && y == 0) {
-            API_setText(0, 0, "SPREMAN!");
-            
-            // Mala pauza od 1.5 sekundi na startu da se miš "pribere" i smiri prije jurnjave
-            // (Simulator će nakratko zastati, što izgleda jako profesionalno)
-            for(volatile long long i=0; i<30000000; i++); 
-            
-            state = FASTEST_RUN;
+            pass++;
+
+            // Compute flood toward centre from the current (updated) wall map
+            flood_update(false);
+
+            // If the flood map didn't change since the last pass, the path is
+            // stable — any further exploration won't improve it. Go fast.
+            // Also go fast after 5 passes as a safety cap so it doesn't loop forever.
+            bool stable = flood_is_stable();
+
+            if (stable || pass >= 5) {
+                API_clearAllColor();
+                // Repaint final flood distances
+                for (int px = 0; px < MAZE_SIZE; px++) {
+                    for (int py = 0; py < MAZE_SIZE; py++) {
+                        char buf[6];
+                        snprintf(buf, sizeof(buf), "%d", flood_get_distance(px, py));
+                        API_setText(px, py, buf);
+                    }
+                }
+                API_setText(0, 0, "SPREMAN!");
+                for (volatile long long i = 0; i < 30000000; i++);
+                state = FASTEST_RUN;
+            } else {
+                // Snapshot current flood, then do another explore pass
+                snapshot_flood();
+                state = EXPLORING;
+                API_setText(0, 0, "Pass");
+            }
         }
 
-        // Faza 3 kraj: Ponovno stigao u centar kroz idealnu putanju!
+        // FASTEST_RUN end: reached centre
         if (state == FASTEST_RUN && (x == 7 || x == 8) && (y == 7 || y == 8)) {
             API_setText(x, y, "POBJEDA!");
-            while(!API_wasReset()) { /* Kraj vožnje, čekaj fizički reset */ }
+            while (!API_wasReset()) { /* wait */ }
             continue;
         }
 
-        // 2. PRERAČUNAJ FLOOD-FILL
-        // Ako se vraćamo na start, cilj poplave je (0,0). Za istraživanje i brzi run cilj je centar.
-        bool flood_to_start = (state == RETURNING);
-        flood_update(flood_to_start);
+        // --- FLOOD UPDATE (exploration phases only) ---
+        if (state != FASTEST_RUN) {
+            bool flood_to_start = (state == RETURNING);
+            flood_update(flood_to_start);
+        }
 
-        // 3. ODREDI NAJBOLJI SMJER KRETANJA
+        // --- NAVIGATE ---
         Direction best_dir = flood_get_best_direction(x, y, current_dir);
 
-        // 4. IZVRŠI SKRETANJE
         if (best_dir != current_dir) {
             int turn_step = (best_dir - current_dir + 4) % 4;
-            if (turn_step == 1)      API_turnRight();
+            if      (turn_step == 1) API_turnRight();
             else if (turn_step == 3) API_turnLeft();
             else if (turn_step == 2) { API_turnRight(); API_turnRight(); }
             current_dir = best_dir;
         }
 
-        // 5. POMAKNI SE NAPRIJED I AŽURIRAJ KOORDINATE
         API_moveForward();
-        if (current_dir == NORTH) y++;
+        if      (current_dir == NORTH) y++;
         else if (current_dir == EAST)  x++;
         else if (current_dir == SOUTH) y--;
         else if (current_dir == WEST)  x--;
